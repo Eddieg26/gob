@@ -1,5 +1,9 @@
 use crate::blob::Blob;
-use std::{collections::HashMap, hash::Hash};
+use std::{
+    any::TypeId,
+    collections::{hash_map::DefaultHasher, HashMap},
+    hash::{Hash, Hasher},
+};
 
 pub struct ColumnCell {
     data: Blob,
@@ -23,6 +27,25 @@ impl ColumnCell {
 
     pub fn take<T: 'static>(mut self) -> T {
         self.data.remove(0)
+    }
+}
+
+pub struct SelectedCell<'a> {
+    column: &'a Column,
+    index: usize,
+}
+
+impl<'a> SelectedCell<'a> {
+    fn new(column: &'a Column, index: usize) -> Self {
+        Self { column, index }
+    }
+
+    pub fn value<T: 'static>(&self) -> Option<&T> {
+        self.column.get::<T>(self.index)
+    }
+
+    pub fn value_mut<T: 'static>(&self) -> Option<&mut T> {
+        self.column.get_mut::<T>(self.index)
     }
 }
 
@@ -71,6 +94,14 @@ impl Column {
         self.data.swap_remove(index)
     }
 
+    pub fn select(&self, index: usize) -> Option<SelectedCell> {
+        if index >= self.len() {
+            None
+        } else {
+            Some(SelectedCell::new(self, index))
+        }
+    }
+
     pub fn push_cell(&mut self, cell: ColumnCell) {
         self.data.extend(cell.data)
     }
@@ -108,67 +139,116 @@ impl From<ColumnCell> for Column {
     }
 }
 
-pub struct Row<K: Clone + Hash + Eq> {
-    columns: HashMap<K, ColumnCell>,
+pub trait ColumnType: 'static {
+    type Type;
+
+    fn name() -> &'static str;
 }
 
-impl<K: Clone + Hash + Eq> Row<K> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ColumnKey(u64);
+
+impl ColumnKey {
+    pub fn from<K: 'static>() -> Self {
+        let mut hasher = DefaultHasher::new();
+        TypeId::of::<K>().hash(&mut hasher);
+
+        ColumnKey(hasher.finish())
+    }
+}
+
+pub struct Row {
+    columns: HashMap<ColumnKey, ColumnCell>,
+}
+
+impl Row {
     pub fn new() -> Self {
         Self {
             columns: HashMap::new(),
         }
     }
 
-    pub fn add_field<C: 'static>(&mut self, field: K, value: C) -> &mut Self {
-        self.columns.insert(field, ColumnCell::from(value));
+    pub fn add_type<C: ColumnType>(&mut self, value: C::Type) -> &mut Self {
+        let key = ColumnKey::from::<C>();
+        self.columns.insert(key, ColumnCell::from(value));
         self
     }
 
-    pub fn remove_field<C: 'static>(&mut self, field: &K) -> Option<C> {
-        self.columns.remove(field)?.take()
+    pub fn remove_type<C: ColumnType>(&mut self) -> Option<C::Type> {
+        let key = ColumnKey::from::<C>();
+        self.columns.remove(&key)?.take()
     }
 
-    pub fn add_cell(&mut self, field: K, cell: ColumnCell) -> &mut Self {
-        self.columns.insert(field, cell.into());
+    pub fn add_field<C: 'static>(&mut self, value: C) -> &mut Self {
+        let key = ColumnKey::from::<C>();
+        self.columns.insert(key, ColumnCell::from(value));
         self
     }
 
-    pub fn remove_cell(&mut self, field: &K) -> Option<ColumnCell> {
-        self.columns.remove(field)
+    pub fn remove_field<C: 'static>(&mut self) -> Option<C> {
+        let key = ColumnKey::from::<C>();
+        self.columns.remove(&key)?.take()
     }
 
-    pub fn field<C: 'static>(&self, field: &K) -> Option<&C> {
-        self.columns.get(field)?.value::<C>()
+    pub fn add_cell(&mut self, key: ColumnKey, cell: ColumnCell) -> &mut Self {
+        self.columns.insert(key, cell.into());
+        self
     }
 
-    pub fn field_mut<C: 'static>(&mut self, field: &K) -> Option<&mut C> {
-        self.columns.get(field)?.value_mut::<C>()
+    pub fn remove_cell(&mut self, key: &ColumnKey) -> Option<ColumnCell> {
+        self.columns.remove(key)
     }
 
-    pub fn fields(&self) -> std::collections::hash_map::Keys<K, ColumnCell> {
+    pub fn field<C: 'static>(&self) -> Option<&C> {
+        let key = ColumnKey::from::<C>();
+        self.columns.get(&key)?.value::<C>()
+    }
+
+    pub fn field_mut<C: 'static>(&mut self) -> Option<&mut C> {
+        let key = ColumnKey::from::<C>();
+        self.columns.get(&key)?.value_mut::<C>()
+    }
+
+    pub fn fields(&self) -> std::collections::hash_map::Keys<ColumnKey, ColumnCell> {
         self.columns.keys()
+    }
+
+    pub fn field_type<C: ColumnType>(&self) -> Option<&C::Type> {
+        let key = ColumnKey::from::<C>();
+        self.columns.get(&key)?.value::<C::Type>()
+    }
+
+    pub fn field_type_mut<C: ColumnType>(&self) -> Option<&mut C::Type> {
+        let key = ColumnKey::from::<C>();
+        self.columns.get(&key)?.value_mut::<C::Type>()
+    }
+
+    pub fn cell(&self, key: &ColumnKey) -> Option<&ColumnCell> {
+        self.columns.get(key)
     }
 }
 
-pub struct SelectedRow<'a, K: Hash + Eq> {
-    columns: HashMap<K, &'a Column>,
+pub struct SelectedRow<'a> {
+    columns: HashMap<ColumnKey, &'a Column>,
     index: usize,
 }
 
-impl<'a, K: Hash + Eq> SelectedRow<'a, K> {
-    pub fn new(columns: HashMap<K, &'a Column>, index: usize) -> Self {
+impl<'a> SelectedRow<'a> {
+    pub fn new(columns: HashMap<ColumnKey, &'a Column>, index: usize) -> Self {
         Self { columns, index }
     }
 
-    pub fn field<C: 'static>(&self, field: &K) -> Option<&C> {
-        self.columns.get(field)?.get::<C>(self.index)
+    pub fn field<C: 'static>(&self) -> Option<&C> {
+        let key = ColumnKey::from::<C>();
+        self.columns.get(&key)?.get::<C>(self.index)
     }
 
-    pub fn field_mut<C: 'static>(&self, field: &K) -> Option<&mut C> {
-        self.columns.get(field)?.get_mut::<C>(self.index)
+    pub fn field_mut<C: 'static>(&self) -> Option<&mut C> {
+        let key = ColumnKey::from::<C>();
+        self.columns.get(&key)?.get_mut::<C>(self.index)
     }
 
-    pub fn fields(&self) -> std::collections::hash_map::Keys<K, &'a Column> {
+    pub fn fields(&self) -> std::collections::hash_map::Keys<ColumnKey, &'a Column> {
         self.columns.keys()
     }
 }

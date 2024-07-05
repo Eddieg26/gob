@@ -1,5 +1,5 @@
 use crate::dense::DenseSet;
-use column::{Column, Row, SelectedRow};
+use column::{Column, ColumnKey, ColumnType, Row, SelectedCell, SelectedRow};
 use std::{collections::HashMap, hash::Hash};
 
 pub mod column;
@@ -24,38 +24,52 @@ impl RowIndex {
     }
 }
 
-pub struct TableLayout<K: Clone + Hash + Eq> {
-    columns: HashMap<K, Column>,
+pub struct TableLayout {
+    columns: HashMap<ColumnKey, Column>,
 }
 
-impl<K: Clone + Hash + Eq> TableLayout<K> {
+impl TableLayout {
     pub fn new() -> Self {
         Self {
             columns: HashMap::new(),
         }
     }
 
-    pub fn add_type<C: 'static>(&mut self, key: K) -> &mut Self {
+    pub fn add_type<C: ColumnType>(&mut self) -> &mut Self {
+        let key = ColumnKey::from::<C>();
+        self.columns.insert(key, Column::new::<C::Type>());
+        self
+    }
+
+    pub fn with_type<C: ColumnType>(mut self) -> Self {
+        let key = ColumnKey::from::<C>();
+        self.columns.insert(key, Column::new::<C::Type>());
+        self
+    }
+
+    pub fn add_field<C: 'static>(&mut self) -> &mut Self {
+        let key = ColumnKey::from::<C>();
         self.columns.insert(key, Column::new::<C>());
         self
     }
 
-    pub fn with_type<C: 'static>(mut self, key: K) -> Self {
+    pub fn with_field<C: 'static>(mut self) -> Self {
+        let key = ColumnKey::from::<C>();
         self.columns.insert(key, Column::new::<C>());
         self
     }
 
-    pub fn add_column(&mut self, key: K, column: Column) -> &mut Self {
+    pub fn add_column(&mut self, key: ColumnKey, column: Column) -> &mut Self {
         self.columns.insert(key, column);
         self
     }
 
-    pub fn with_column(mut self, key: K, column: Column) -> Self {
+    pub fn with_column(mut self, key: ColumnKey, column: Column) -> Self {
         self.columns.insert(key, column);
         self
     }
 
-    pub fn build(self) -> Table<K> {
+    pub fn build(self) -> Table {
         Table {
             columns: self.columns,
             rows: DenseSet::new(),
@@ -63,29 +77,54 @@ impl<K: Clone + Hash + Eq> TableLayout<K> {
     }
 }
 
-pub struct Table<F: Clone + Hash + Eq> {
-    columns: HashMap<F, Column>,
+pub struct Table {
+    columns: HashMap<ColumnKey, Column>,
     rows: DenseSet<RowIndex>,
 }
 
-impl<F: Clone + Hash + Eq> Table<F> {
-    pub fn builder() -> TableLayout<F> {
+impl Table {
+    pub fn builder() -> TableLayout {
         TableLayout::new()
     }
 
-    pub fn cell<C: 'static>(&self, index: impl Into<RowIndex>, field: &F) -> Option<&C> {
+    pub fn field<C: 'static>(&self, index: impl Into<RowIndex>) -> Option<&C> {
+        let key = ColumnKey::from::<C>();
         let index = index.into();
         let index = self.rows.index(&index)?;
-        self.columns.get(field)?.get::<C>(index)
+        self.columns.get(&key)?.get::<C>(index)
     }
 
-    pub fn cell_mut<C: 'static>(&self, index: impl Into<RowIndex>, field: &F) -> Option<&mut C> {
+    pub fn field_mut<C: 'static>(&self, index: impl Into<RowIndex>) -> Option<&mut C> {
+        let key = ColumnKey::from::<C>();
         let index = index.into();
         let index = self.rows.index(&index)?;
-        self.columns.get(field)?.get_mut::<C>(index)
+        self.columns.get(&key)?.get_mut::<C>(index)
     }
 
-    pub fn select(&self, index: impl Into<RowIndex>) -> Option<SelectedRow<F>> {
+    pub fn field_type<C: ColumnType>(&self, index: impl Into<RowIndex>) -> Option<&C::Type> {
+        let key = ColumnKey::from::<C>();
+        let index = index.into();
+        let index = self.rows.index(&index)?;
+        self.columns.get(&key)?.get::<C::Type>(index)
+    }
+
+    pub fn field_type_mut<C: ColumnType>(
+        &self,
+        index: impl Into<RowIndex>,
+    ) -> Option<&mut C::Type> {
+        let key = ColumnKey::from::<C>();
+        let index = index.into();
+        let index = self.rows.index(&index)?;
+        self.columns.get(&key)?.get_mut::<C::Type>(index)
+    }
+
+    pub fn cell(&self, key: &ColumnKey, index: impl Into<RowIndex>) -> Option<SelectedCell> {
+        let index = index.into();
+        let index = self.rows.index(&index)?;
+        self.columns.get(key)?.select(index)
+    }
+
+    pub fn select(&self, index: impl Into<RowIndex>) -> Option<SelectedRow> {
         let index = index.into();
         let index = self.rows.index(&index)?;
         let mut columns = HashMap::new();
@@ -96,7 +135,7 @@ impl<F: Clone + Hash + Eq> Table<F> {
         Some(SelectedRow::new(columns, index))
     }
 
-    pub fn insert(&mut self, index: impl Into<RowIndex>, mut row: Row<F>) {
+    pub fn insert(&mut self, index: impl Into<RowIndex>, mut row: Row) {
         self.rows.insert(index.into());
         for (field, column) in &mut self.columns {
             let cell = row.remove_cell(field).unwrap();
@@ -104,7 +143,7 @@ impl<F: Clone + Hash + Eq> Table<F> {
         }
     }
 
-    pub fn remove(&mut self, index: impl Into<RowIndex>) -> Option<Row<F>> {
+    pub fn remove(&mut self, index: impl Into<RowIndex>) -> Option<Row> {
         let index = index.into();
         let idx = self.rows.index(&index)?;
         self.rows.remove(&index)?;

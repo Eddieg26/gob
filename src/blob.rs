@@ -386,6 +386,70 @@ impl Drop for Blob {
     }
 }
 
+pub struct BlobCell {
+    data: Vec<u8>,
+    layout: Layout,
+    drop: Option<fn(data: *mut u8)>,
+}
+
+impl BlobCell {
+    pub fn new<T: 'static>(value: T) -> Self {
+        let layout = Layout::new::<T>();
+        let data = unsafe {
+            let ptr = std::ptr::addr_of!(value) as *mut u8;
+            std::mem::forget(value);
+            Vec::from_raw_parts(ptr, layout.size(), layout.size())
+        };
+
+        let drop = match std::mem::needs_drop::<T>() {
+            true => Some(drop::<T> as fn(*mut u8)),
+            false => None,
+        };
+
+        Self { data, layout, drop }
+    }
+
+    pub fn layout(&self) -> &Layout {
+        &self.layout
+    }
+
+    pub fn drop(&self) -> Option<&fn(*mut u8)> {
+        self.drop.as_ref()
+    }
+
+    pub fn value<T: 'static>(&self) -> &T {
+        unsafe { &*(self.data.as_ptr() as *const T) }
+    }
+
+    pub fn value_mut<T: 'static>(&mut self) -> &mut T {
+        unsafe { &mut *(self.data.as_mut_ptr() as *mut T) }
+    }
+
+    pub fn ptr<T: 'static>(&self) -> Ptr<T> {
+        Ptr::new(self.data.as_ptr() as *mut T)
+    }
+
+    pub fn take<T: 'static>(self) -> T {
+        unsafe {
+            let value = (self.data.as_ptr() as *const T).read();
+            std::mem::forget(self);
+            value
+        }
+    }
+}
+
+impl Drop for BlobCell {
+    fn drop(&mut self) {
+        if let Some(drop) = self.drop {
+            drop(self.data.as_mut_ptr());
+        }
+
+        let mut data = std::mem::take(&mut self.data);
+        data.clear();
+        std::mem::forget(data);
+    }
+}
+
 impl<T: 'static> From<Vec<T>> for Blob {
     fn from(value: Vec<T>) -> Self {
         let mut blob = Blob::new::<T>(value.capacity());

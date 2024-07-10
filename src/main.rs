@@ -1,3 +1,4 @@
+pub mod asset;
 pub mod background;
 pub mod blob;
 pub mod dense;

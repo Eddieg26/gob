@@ -107,7 +107,6 @@ impl<'a> ScopedTaskPool<'a> {
                     scope.spawn(|| task());
                 }
             });
-            println!("Ran {} tasks", len);
         }
     }
 }
